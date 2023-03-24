@@ -1,5 +1,5 @@
 import jittor as jt 
-from jdet.ops.convex_giou import convex_iou
+from jdet.ops.convex_iou import convex_iou
 from jdet.utils.registry import BOXES,build_from_cfg
 
 class AssignResult:
@@ -250,11 +250,11 @@ class ConvexAssigner:
             gt_rect_bboxes (jt.Tensor): The horizontal bboxes, shape (k, 4).
         """
         gt_xs, gt_ys = gt_rbboxes[:, 0::2], gt_rbboxes[:, 1::2]
-        gt_xmin, _ = gt_xs.min(1)
-        gt_ymin, _ = gt_ys.min(1)
-        gt_xmax, _ = gt_xs.max(1)
-        gt_ymax, _ = gt_ys.max(1)
-        gt_rect_bboxes = jt.cat([
+        gt_xmin = gt_xs.min(1)
+        gt_ymin = gt_ys.min(1)
+        gt_xmax = gt_xs.max(1)
+        gt_ymax = gt_ys.max(1)
+        gt_rect_bboxes = jt.concat([
             gt_xmin[:, None], gt_ymin[:, None], gt_xmax[:, None], gt_ymax[:,
                                                                           None]
         ],
@@ -262,12 +262,15 @@ class ConvexAssigner:
 
         return gt_rect_bboxes
 
-    def assign(self,
-               points,
-               gt_rbboxes,
-               gt_rbboxes_ignore=None,
-               gt_labels=None,
-               overlaps=None):
+    def assign(
+        self,
+        points,
+        gt_rbboxes,
+        overlaps=None,
+        gt_rbboxes_ignore=None,
+        gt_labels=None,
+    ):
+
         """Assign gt to bboxes.
         The assignment is done in following steps
         1. compute iou between all bbox (bbox of all pyramid levels) and gt
@@ -294,13 +297,11 @@ class ConvexAssigner:
 
         if num_gts == 0 or num_points == 0:
             # If no truth assign everything to the background
-            assigned_gt_inds = points.new_full((num_points, ),
-                                               0).long()
+            assigned_gt_inds = jt.zeros((num_points, ), dtype=points.dtype).long()
             if gt_labels is None:
                 assigned_labels = None
             else:
-                assigned_labels = points.new_full((num_points, ),
-                                                  -1).long()
+                assigned_labels = (jt.ones((num_points, ), dtype=points.dtype) * -1).long()
             return AssignResult(
                 num_gts, assigned_gt_inds, None, labels=assigned_labels)
 
@@ -315,16 +316,16 @@ class ConvexAssigner:
         # assign gt rbox
         gt_bboxes_xy = (gt_bboxes[:, :2] + gt_bboxes[:, 2:]) / 2
 
-        gt_bboxes_wh = (gt_bboxes[:, 2:] - gt_bboxes[:, :2]).clamp(min=1e-6)
+        gt_bboxes_wh = (gt_bboxes[:, 2:] - gt_bboxes[:, :2]).clamp(min_v=1e-6)
         scale = self.scale
         gt_bboxes_lvl = ((jt.log2(gt_bboxes_wh[:, 0] / scale) +
                           jt.log2(gt_bboxes_wh[:, 1] / scale)) / 2).int()
-        gt_bboxes_lvl = jt.clamp(gt_bboxes_lvl, min=lvl_min, max=lvl_max)
+        gt_bboxes_lvl = jt.clamp(gt_bboxes_lvl, min_v=lvl_min, max_v=lvl_max)
 
         # stores the assigned gt index of each point
         assigned_gt_inds = jt.zeros((num_points, ), dtype=points.dtype).long()
         # stores the assigned gt dist (to this point) of each point
-        assigned_gt_dist = points.new_full((num_points, ), float('inf'))
+        assigned_gt_dist = (jt.ones((num_points, ), dtype=points.dtype) * float('inf'))
         points_range = jt.arange(points.shape[0])
 
         for idx in range(num_gts):
@@ -364,11 +365,14 @@ class ConvexAssigner:
                 less_than_recorded_index]
 
         if gt_labels is not None:
-            assigned_labels = assigned_gt_inds.new_full((num_points, ),
-                                                        -1).long()
+            assigned_labels = (jt.ones((num_points, ), dtype=assigned_gt_inds.dtype) * -1).long()
+            print('1 assigned_labels: ', assigned_labels.shape, assigned_labels.dtype)
+            print('1 assigned_gt_inds: ', assigned_gt_inds.shape, assigned_gt_inds.dtype)
             pos_inds = jt.nonzero(
-                assigned_gt_inds > 0, as_tuple=False).squeeze()
+                assigned_gt_inds > 0)
+            print('1 pos_inds: ', pos_inds.shape, pos_inds.dtype)
             if pos_inds.numel() > 0:
+                print('1 gt_labels: ', gt_labels.shape, gt_labels.dtype)
                 assigned_labels[pos_inds] = gt_labels[
                     assigned_gt_inds[pos_inds] - 1]
         else:
@@ -498,8 +502,7 @@ class MaxConvexIoUAssigner:
         num_gts, num_bboxes = overlaps.size(0), overlaps.size(1)
 
         # 1. assign -1 by default
-        assigned_gt_inds = overlaps.new_full((num_bboxes, ),
-                                             -1).long()
+        assigned_gt_inds = (jt.ones((num_bboxes, ), dtype=overlaps.dtype) * -1).long()                   
 
         if num_gts == 0 or num_bboxes == 0:
             # No ground truth or boxes, return empty assignment
@@ -510,8 +513,7 @@ class MaxConvexIoUAssigner:
             if gt_labels is None:
                 assigned_labels = None
             else:
-                assigned_labels = overlaps.new_full((num_bboxes, ),
-                                                    -1).long()
+                assigned_labels = (jt.ones((num_bboxes,), dtype=overlaps.dtype) * -1).long()
             return AssignResult(
                 num_gts,
                 assigned_gt_inds,
@@ -520,10 +522,10 @@ class MaxConvexIoUAssigner:
 
         # for each anchor, which gt best overlaps with it
         # for each anchor, the max iou of all gts
-        max_overlaps, argmax_overlaps = overlaps.max(dim=0)
+        argmax_overlaps,max_overlaps = overlaps.argmax(dim=0)
         # for each gt, which anchor best overlaps with it
         # for each gt, the max iou of all proposals
-        gt_max_overlaps, gt_argmax_overlaps = overlaps.max(dim=1)
+        gt_argmax_overlaps,gt_max_overlaps = overlaps.argmax(dim=1)
 
         # 2. assign negative: below
         if isinstance(self.neg_iou_thr, float):
@@ -548,10 +550,14 @@ class MaxConvexIoUAssigner:
                     assigned_gt_inds[gt_argmax_overlaps[i]] = i + 1
 
         if gt_labels is not None:
-            assigned_labels = assigned_gt_inds.new_full((num_bboxes, ), -1)
+            assigned_labels = jt.ones((num_bboxes, ), dtype=assigned_gt_inds.dtype) * -1
+            print('assigned_labels: ', assigned_labels.shape, assigned_labels.dtype)
+            print('assigned_gt_inds: ', assigned_gt_inds.shape, assigned_gt_inds.dtype)
             pos_inds = jt.nonzero(
-                assigned_gt_inds > 0, as_tuple=False).squeeze()
+                assigned_gt_inds > 0)
+            print('pos_inds: ', pos_inds.shape, pos_inds.dtype)
             if pos_inds.numel() > 0:
+                print('gt_labels: ', gt_labels.shape, gt_labels.dtype)
                 assigned_labels[pos_inds] = gt_labels[
                     assigned_gt_inds[pos_inds] - 1]
         else:

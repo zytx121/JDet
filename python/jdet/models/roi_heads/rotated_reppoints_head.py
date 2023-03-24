@@ -7,7 +7,7 @@ from jdet.models.utils.modules import ConvModule
 from jdet.utils.general import multi_apply,unmap
 from jdet.utils.registry import HEADS,LOSSES,BOXES,build_from_cfg
 
-# from jdet.ops.min_area_polygons import MinAreaPolygons
+from jdet.ops.min_area_polygons import MinAreaPolygons
 from jdet.ops.dcn_v1 import DeformConv
 from jdet.ops.nms_rotated import multiclass_nms_rotated
 from jdet.models.boxes.box_ops import delta2bbox_rotated, rotated_box_to_poly
@@ -42,10 +42,10 @@ def levels_to_images(mlvl_tensor, flatten=False):
         t = t.view(batch_size, -1, channels).contiguous()
         for img in range(batch_size):
             batch_list[img].append(t[img])
-    return [jt.cat(item, 0) for item in batch_list]
+    return [jt.concat(item, 0) for item in batch_list]
 
 @HEADS.register_module()
-class RotatedRetinaHead(nn.Module):
+class RotatedRepPointsHead(nn.Module):
 
     def __init__(self,
                  num_classes,
@@ -98,7 +98,7 @@ class RotatedRetinaHead(nn.Module):
                         allowed_border=-1,
                         pos_weight=-1,
                         debug=False))):
-        super(RotatedRetinaHead, self).__init__()
+        super(RotatedRepPointsHead, self).__init__()
         self.num_classes = num_classes
         self.in_channels = in_channels
         self.feat_channels = feat_channels
@@ -106,6 +106,7 @@ class RotatedRetinaHead(nn.Module):
         self.point_feat_channels = point_feat_channels
         self.gradient_mul = gradient_mul
         self.point_base_scale = point_base_scale
+        self.num_points = num_points
         self.point_strides = point_strides
         self.prior_generator = MlvlPointGenerator(
             self.point_strides, offset=0.)
@@ -128,7 +129,7 @@ class RotatedRetinaHead(nn.Module):
         dcn_base_x = np.tile(dcn_base, self.dcn_kernel)
         dcn_base_offset = np.stack([dcn_base_y, dcn_base_x], axis=1).reshape(
             (-1))
-        self.dcn_base_offset = jt.tensor(dcn_base_offset).view(1, -1, 1, 1)
+        self.dcn_base_offset = jt.array(dcn_base_offset).view(1, -1, 1, 1)
     
         self.use_sigmoid_cls = loss_cls.get('use_sigmoid', False)
         self.sampling = loss_cls['type'] not in ['FocalLoss', 'GHMC']
@@ -203,19 +204,19 @@ class RotatedRetinaHead(nn.Module):
         normal_init(self.reppoints_pts_refine_conv, std=0.01)
         normal_init(self.reppoints_pts_refine_out, std=0.01)
 
-    # def points2rotrect(self, pts, y_first=True):
-    #     """Convert points to oriented bboxes."""
-    #     if y_first:
-    #         pts = pts.reshape(-1, self.num_points, 2)
-    #         pts_dy = pts[:, :, 0::2]
-    #         pts_dx = pts[:, :, 1::2]
-    #         pts = jt.cat([pts_dx, pts_dy],
-    #                         dim=2).reshape(-1, 2 * self.num_points)
-    #     if self.transform_method == 'rotrect':
-    #         rotrect_pred = MinAreaPolygons(pts)
-    #         return rotrect_pred
-    #     else:
-    #         raise NotImplementedError
+    def points2rotrect(self, pts, y_first=True):
+        """Convert points to oriented bboxes."""
+        if y_first:
+            pts = pts.reshape(-1, self.num_points, 2)
+            pts_dy = pts[:, :, 0::2]
+            pts_dx = pts[:, :, 1::2]
+            pts = jt.concat([pts_dx, pts_dy],
+                            dim=2).reshape(-1, 2 * self.num_points)
+        if self.transform_method == 'rotrect':
+            rotrect_pred = MinAreaPolygons(pts)
+            return rotrect_pred
+        else:
+            raise NotImplementedError
 
     def forward_single(self, x):
         dcn_base_offset = self.dcn_base_offset.type_as(x)
@@ -242,7 +243,7 @@ class RotatedRetinaHead(nn.Module):
 
         return cls_out, pts_out_init, pts_out_refine
 
-    def get_points(self, featmap_sizes, img_metas, device):
+    def get_points(self, featmap_sizes, img_metas):
         """Get points according to feature map sizes.
         Args:
             featmap_sizes (list[tuple]): Multi-level feature map sizes.
@@ -253,7 +254,7 @@ class RotatedRetinaHead(nn.Module):
         num_imgs = len(img_metas)
 
         multi_level_points = self.prior_generator.grid_priors(
-            featmap_sizes, device=device, with_stride=True)
+            featmap_sizes, with_stride=True)
         points_list = [[point.clone() for point in multi_level_points]
                        for _ in range(num_imgs)]
 
@@ -321,8 +322,7 @@ class RotatedRetinaHead(nn.Module):
         bbox_gt = jt.zeros((num_valid_proposals, 8), dtype=proposals.dtype)
         pos_proposals = jt.zeros_like(proposals)
         proposals_weights = jt.zeros(num_valid_proposals, dtype=proposals.dtype)
-        labels = proposals.new_full((num_valid_proposals, ),
-                                    self.num_classes).long()
+        labels = (jt.ones((num_valid_proposals, ), ) * self.num_classes).long()
         label_weights = jt.zeros(num_valid_proposals, dtype=proposals.dtype).float()
 
         pos_inds = sampling_result.pos_inds
@@ -413,8 +413,8 @@ class RotatedRetinaHead(nn.Module):
         # concat all level points and flags to a single tensor
         for i in range(num_imgs):
             assert len(proposals_list[i]) == len(valid_flag_list[i])
-            proposals_list[i] = jt.cat(proposals_list[i])
-            valid_flag_list[i] = jt.cat(valid_flag_list[i])
+            proposals_list[i] = jt.concat(proposals_list[i])
+            valid_flag_list[i] = jt.concat(valid_flag_list[i])
 
         # compute targets for each image
         if gt_bboxes_ignore_list is None:
@@ -500,8 +500,8 @@ class RotatedRetinaHead(nn.Module):
         # concat all level points and flags to a single tensor
         for i in range(num_imgs):
             assert len(proposals_list[i]) == len(valid_flag_list[i])
-            proposals_list[i] = jt.cat(proposals_list[i])
-            valid_flag_list[i] = jt.cat(valid_flag_list[i])
+            proposals_list[i] = jt.concat(proposals_list[i])
+            valid_flag_list[i] = jt.concat(valid_flag_list[i])
 
         # compute targets for each image
         if gt_bboxes_ignore_list is None:
@@ -603,11 +603,10 @@ class RotatedRetinaHead(nn.Module):
         featmap_sizes = [featmap.size()[-2:] for featmap in cls_scores]
         assert len(featmap_sizes) == self.prior_generator.num_levels
         label_channels = self.cls_out_channels if self.use_sigmoid_cls else 1
-        device = cls_scores[0].device
 
         # target for initial stage
         center_list, valid_flag_list = self.get_points(
-            featmap_sizes, img_metas, device=device)
+            featmap_sizes, img_metas)
         pts_coordinate_preds_init = self.offset_to_pts(center_list,
                                                        pts_preds_init)
         if self.use_reassign:  # get num_proposal_each_lvl and lvl_num
@@ -632,7 +631,7 @@ class RotatedRetinaHead(nn.Module):
          num_total_pos_init, num_total_neg_init, _) = cls_reg_targets_init
         # target for refinement stage
         center_list, valid_flag_list = self.get_points(
-            featmap_sizes, img_metas, device=device)
+            featmap_sizes, img_metas)
         pts_coordinate_preds_refine = self.offset_to_pts(
             center_list, pts_preds_refine)
         points_list = []
@@ -701,17 +700,17 @@ class RotatedRetinaHead(nn.Module):
                     )
                 num_pos = sum(num_pos)
             # convert all tensor list to a flatten tensor
-            cls_scores = jt.cat(cls_scores, 0).view(-1,
+            cls_scores = jt.concat(cls_scores, 0).view(-1,
                                                        cls_scores[0].size(-1))
-            pts_preds_refine = jt.cat(pts_coordinate_preds_refine, 0).view(
+            pts_preds_refine = jt.concat(pts_coordinate_preds_refine, 0).view(
                 -1, pts_coordinate_preds_refine[0].size(-1))
-            labels = jt.cat(labels_list, 0).view(-1)
-            labels_weight = jt.cat(label_weights_list, 0).view(-1)
-            rbbox_gt_refine = jt.cat(rbbox_gt_list_refine, 0).view(
+            labels = jt.concat(labels_list, 0).view(-1)
+            labels_weight = jt.concat(label_weights_list, 0).view(-1)
+            rbbox_gt_refine = jt.concat(rbbox_gt_list_refine, 0).view(
                 -1, rbbox_gt_list_refine[0].size(-1))
-            convex_weights_refine = jt.cat(convex_weights_list_refine,
+            convex_weights_refine = jt.concat(convex_weights_list_refine,
                                               0).view(-1)
-            pos_normalize_term = jt.cat(pos_normalize_term, 0).reshape(-1)
+            pos_normalize_term = jt.concat(pos_normalize_term, 0).reshape(-1)
             pos_inds_flatten = ((0 <= labels) &
                                 (labels < self.num_classes)).nonzero(
                                     as_tuple=False).reshape(-1)

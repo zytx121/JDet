@@ -9,8 +9,7 @@ from jdet.utils.registry import LOSSES
 class ConvexGIoULossFuction(Function):
     """The function of Convex GIoU loss."""
 
-    @staticmethod
-    def forward(ctx,
+    def execute(self,
                 pred,
                 target,
                 weight=None,
@@ -19,7 +18,6 @@ class ConvexGIoULossFuction(Function):
                 loss_weight=1.0):
         """Forward function.
         Args:
-            ctx:  {save_for_backward, convex_points_grad}
             pred (jt.Tensor): Predicted convexes.
             target (jt.Tensor): Corresponding gt convexes.
             weight (jt.Tensor, optional): The weight of loss for each
@@ -30,7 +28,6 @@ class ConvexGIoULossFuction(Function):
                 the loss. Defaults to None.
             loss_weight (float, optional): The weight of loss. Defaults to 1.0.
         """
-        ctx.save_for_backward(pred)
         convex_gious, grad = convex_giou(pred, target)
 
         loss = 1 - convex_gious
@@ -41,19 +38,17 @@ class ConvexGIoULossFuction(Function):
             loss = loss.sum()
         elif reduction == 'mean':
             loss = loss.mean()
-
-        unvaild_inds = jt.nonzero((grad > 1).sum(1), as_tuple=False)[:, 0]
+        unvaild_inds = jt.nonzero((grad > 1).sum(1))[:, 0]
         grad[unvaild_inds] = 1e-6
 
         # _reduce_grad
         reduce_grad = -grad / grad.size(0) * loss_weight
-        ctx.convex_points_grad = reduce_grad
+        self.save_vars = reduce_grad
         return loss
 
-    @staticmethod
-    def backward(ctx, input=None):
+    def grad(self, input=None):
         """Backward function."""
-        convex_points_grad = ctx.convex_points_grad
+        convex_points_grad = self.save_vars
         return convex_points_grad, None, None, None, None, None
 
 
@@ -78,7 +73,7 @@ class ConvexGIoULoss(nn.Module):
         self.reduction = reduction
         self.loss_weight = loss_weight
 
-    def forward(self,
+    def execute(self,
                 pred,
                 target,
                 weight=None,

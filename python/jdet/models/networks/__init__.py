@@ -10,4 +10,5 @@ from .roi_transformer import RoITransformer
 from .fcos import FCOS
 from .yolo import *
 from .h2rbox import H2RBox
+from .rotated_reppoints import RotatedRepPoints
 __all__ = []

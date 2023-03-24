@@ -41,7 +41,7 @@ class MlvlPointGenerator:
 
     def grid_priors(self,
                     featmap_sizes,
-                    dtype=torch.float32,
+                    dtype=jt.float32,
                     with_stride=False):
         """Generate grid points of multiple feature levels.
         Args:
@@ -76,6 +76,7 @@ class MlvlPointGenerator:
     def single_level_grid_priors(self,
                                  featmap_size,
                                  level_idx,
+                                 dtype=jt.float32,
                                  with_stride=False):
         """Generate grid Points of a single level.
         Note:
@@ -84,6 +85,7 @@ class MlvlPointGenerator:
             featmap_size (tuple[int]): Size of the feature maps, arrange as
                 (h, w).
             level_idx (int): The index of corresponding feature map level.
+            dtype (:obj:`dtype`): Dtype of priors. Default: jt.float32.
             with_stride (bool): Concatenate the stride to the last dimension
                 of points.
         Return:
@@ -100,21 +102,20 @@ class MlvlPointGenerator:
         stride_w, stride_h = self.strides[level_idx]
         shift_x = (jt.arange(0, feat_w) +
                    self.offset) * stride_w
+        shift_x = shift_x.to(dtype)
         shift_y = (jt.arange(0, feat_h) +
                    self.offset) * stride_h
+        shift_y = shift_y.to(dtype)
         shift_xx, shift_yy = self._meshgrid(shift_x, shift_y)
         if not with_stride:
             shifts = jt.stack([shift_xx, shift_yy], dim=-1)
         else:
             # use `shape[0]` instead of `len(shift_xx)` for ONNX export
-            stride_w = shift_xx.new_full((shift_xx.shape[0], ),
-                                         stride_w)
-            stride_h = shift_xx.new_full((shift_yy.shape[0], ),
-                                         stride_h)
+            stride_w = jt.ones((shift_xx.shape[0], ), dtype=dtype) * stride_w
+            stride_h = jt.ones((shift_yy.shape[0], ), dtype=dtype) * stride_h
             shifts = jt.stack([shift_xx, shift_yy, stride_w, stride_h],
                                  dim=-1)
-        all_points = shifts
-        return all_points
+        return shifts
 
     def valid_flags(self, featmap_sizes, pad_shape):
         """Generate valid flags of points of multiple feature levels.
